@@ -13,7 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.patches as patches
-from matplotlib.patches import FancyBboxPatch, Circle, Wedge, Polygon, FancyArrowPatch
+from matplotlib.patches import FancyBboxPatch, Circle, Wedge, Polygon, FancyArrowPatch, Rectangle
 import matplotlib.patheffects as path_effects
 from matplotlib import image as mimage
 
@@ -32,19 +32,20 @@ COLOR_DOCTOR = '#3b82f6'      # Blue for doctor
 COLOR_DRAFT = '#f97316'       # Orange - draft/speculator
 COLOR_TARGET = '#10b981'      # Green - target model
 COLOR_DATA = '#8b5cf6'        # Purple - data buffer
+# Light/pale versions for "replay" balls (e.g. in Status 4)
+COLOR_DRAFT_LIGHT = '#fed7aa'
+COLOR_TARGET_LIGHT = '#a7f3d0'
 COLOR_HAPPY = '#22c55e'       # Green - happy
 COLOR_SAD = '#ef4444'         # Red - sad
 COLOR_AURORA = '#6366f1'      # Indigo - Aurora theme
 COLOR_SERVER = '#e2e8f0'
 
-# --- Optional: custom user images (JPG/PNG) ---
-# Nurse (cycle 1)
-NURSE_IMAGE_PATH = '/data/zshao/animation/nurse.png'
-# Doctor (fallback when cycle has no dedicated image)
-DOCTOR_IMAGE_PATH = None   # e.g. "./doctor.jpg"
-# Cycle 2 and 3: use these images instead of doctor cartoon
+# --- Optional: custom user images (JPG/PNG)，按 cycle 使用 ---
+# cycle 1 → nurse, cycle 2 → student1, cycle 3 → student2
+NURSE_IMAGE_PATH = '/data/zshao/animation/nurse.png'      # cycle 1
 STUDENT1_IMAGE_PATH = '/data/zshao/animation/student1.png'   # cycle 2
 STUDENT2_IMAGE_PATH = '/data/zshao/animation/student2.png'   # cycle 3
+DOCTOR_IMAGE_PATH = None   # fallback 当无 cycle 专用图时
 _user_image_cache = {}   # path -> ndarray
 
 def _load_image(path):
@@ -140,7 +141,15 @@ data_buffer = FancyBboxPatch((DATA_BUFFER_LEFT, DATA_BUFFER_BOTTOM), DATA_BUFFER
                               boxstyle="round,pad=0.05,rounding_size=0.15",
                               facecolor=COLOR_DATA, edgecolor='#7c3aed', linewidth=2, alpha=0.8)
 ax.add_patch(data_buffer)
-ax.text(DATA_BUFFER_CX, DATA_BUFFER_CY, 'Data\nBuffer', fontsize=10, fontweight='bold', color='white', ha='center', va='center')
+# Data Buffer 进度条填充：内嵌矩形，高度表示“满度”，在 animate 中按 status 更新
+DATA_BUFFER_MARGIN = 0.08
+_data_buffer_inner_w = DATA_BUFFER_W - 2 * DATA_BUFFER_MARGIN
+_data_buffer_inner_h_max = DATA_BUFFER_H - 2 * DATA_BUFFER_MARGIN
+data_buffer_fill = Rectangle((DATA_BUFFER_LEFT + DATA_BUFFER_MARGIN, DATA_BUFFER_BOTTOM + DATA_BUFFER_MARGIN),
+                              _data_buffer_inner_w, _data_buffer_inner_h_max * 0.5,
+                              facecolor='white', edgecolor='none', alpha=0.4, zorder=1)
+ax.add_patch(data_buffer_fill)
+ax.text(DATA_BUFFER_CX, DATA_BUFFER_CY, 'Data\nBuffer', fontsize=10, fontweight='bold', color='white', ha='center', va='center', zorder=2)
 
 # 统一 Draft/Target/Trainer/New Spec：高度为原来 2/3，宽度为原来 2 倍
 MODEL_BOX_H = 1.0 * (2 / 3)   # 2/3
@@ -248,29 +257,30 @@ def draw_user(ax, x, y, user_type, is_happy, alpha=1.0, cycle=None, entrance_pro
                               alpha=alpha, zorder=10, interpolation='bilinear')
         return im_artist
 
-    # --- Cycle 2: use student1 image instead of doctor ---
+    # --- 按 cycle 使用对应 PNG：cycle1→nurse, cycle2→student1, cycle3→student2 ---
+    if cycle == 1 and NURSE_IMAGE_PATH:
+        img = _load_image(NURSE_IMAGE_PATH)
+        if img is not None:
+            elements.append(_draw_user_image(img, x, y, alpha, entrance_progress))
+            return elements
     if cycle == 2 and STUDENT1_IMAGE_PATH:
         img = _load_image(STUDENT1_IMAGE_PATH)
         if img is not None:
             elements.append(_draw_user_image(img, x, y, alpha, entrance_progress))
             return elements
-
-    # --- Cycle 3: use student2 image instead of doctor ---
     if cycle == 3 and STUDENT2_IMAGE_PATH:
         img = _load_image(STUDENT2_IMAGE_PATH)
         if img is not None:
             elements.append(_draw_user_image(img, x, y, alpha, entrance_progress))
             return elements
 
-    # --- Custom nurse image: if path set, show PNG/JPG instead of cartoon ---
-    if user_type == 'nurse' and NURSE_IMAGE_PATH:
-        img = _load_nurse_image(NURSE_IMAGE_PATH)
+    # --- Fallback: 按 user_type 用 doctor/nurse 图（若上面未命中）---
+    if str(user_type).lower() == 'nurse' and NURSE_IMAGE_PATH:
+        img = _load_image(NURSE_IMAGE_PATH)
         if img is not None:
             elements.append(_draw_user_image(img, x, y, alpha, entrance_progress))
             return elements
-
-    # --- Custom doctor image: if path set, show JPG/PNG instead of cartoon ---
-    if user_type == 'doctor' and DOCTOR_IMAGE_PATH:
+    if str(user_type).lower() == 'doctor' and DOCTOR_IMAGE_PATH:
         img = _load_doctor_image(DOCTOR_IMAGE_PATH)
         if img is not None:
             elements.append(_draw_user_image(img, x, y, alpha, entrance_progress))
@@ -443,7 +453,7 @@ def draw_dots_along_path(ax, x0, y0, x1, y1, progress, n_dots=5, color=COLOR_DAT
         state_list.append(dot)
 
 
-def draw_dots_batch_along_path(ax, x0, y0, x1, y1, batch_progress, n_dots=3, color=COLOR_DATA, dot_radius=0.1, state_list=None):
+def draw_dots_batch_along_path(ax, x0, y0, x1, y1, batch_progress, n_dots=3, color=COLOR_DATA, dot_radius=0.1, state_list=None, alpha=0.85):
     """每次发 n_dots 个小球，沿路径从 (x0,y0) 到 (x1,y1)；batch_progress 0~1 表示本批小球从起点到终点的进度。
     只画本批的 n_dots 个球，略错开（0.2 间距），到达终点后再发下一批由外部用 progress 分段实现。"""
     if state_list is None:
@@ -455,7 +465,7 @@ def draw_dots_batch_along_path(ax, x0, y0, x1, y1, batch_progress, n_dots=3, col
             continue
         x = x0 + (x1 - x0) * t
         y = y0 + (y1 - y0) * t
-        dot = Circle((x, y), dot_radius, facecolor=color, edgecolor='none', alpha=0.85, zorder=14)
+        dot = Circle((x, y), dot_radius, facecolor=color, edgecolor='none', alpha=alpha, zorder=14)
         ax.add_patch(dot)
         state_list.append(dot)
 
@@ -628,28 +638,27 @@ def animate(frame):
     # Spec evolves: Medical only -> Medical+Research (after cycle 2 training)
     # Use symbols: + for Medical (cross), * for Research (star)
     if cycle == 1:
-        user_type = 'nurse'
-        is_happy = True
+        user_type = 'Nurse'
+        is_happy = False
         spec_type = 'Assistant with Health Speculator'
-        draft_icon = '+'  # Medical cross
+        result = 'get response quickly🥰'
         show_research = False
     elif cycle == 2:
         user_type = 'student'
         is_happy = False
         spec_type = 'Assistant with Health Speculator'
-        draft_icon = '+'
-        # +Math 仅在 new spec 覆盖 draft 之后再出现（spec_fly 后半段或 cycle 结束暂停）
+        result = 'get response slowly😭'
         show_research = (phase == 'spec_fly' and progress > 0.85) or (phase == 'cycle_pause')
     else:  # cycle 3
         user_type = 'student'
         # Start sad, become happy as output appears
         is_happy = (phase == 'generation' and progress > 0.2) or phase in ('buffer_trainer_spec', 'spec_fly', 'cycle_pause')
         spec_type = 'Assistant with Health+Math Speculator'
-        draft_icon = '+'
+        result = 'get response quickly🥰'
         show_research = True  # Already trained
     
     # Update cycle text
-    cycle_text.set_text(f'Cycle {cycle}/3: {user_type.capitalize()} using {spec_type}')
+    cycle_text.set_text(f'Cycle {cycle}/3: {user_type.capitalize()} using {spec_type} {result}')
     
     # 当前 phase 起始帧（用于本 phase 内局部帧）
     phase_frame = frame - CUMULATIVE_FRAMES[cycle - 1]
@@ -699,6 +708,20 @@ def animate(frame):
     user_x, user_y = USER_X, USER_Y
     inp, out = INPUT_OUTPUT_BY_CYCLE[cycle - 1]
 
+    # Data Buffer 进度条：status1/2 半满，status3 半满→全满，status4 全满→1/4→1/2，status5 半满
+    if phase == 'input_typing' or phase == 'input_to_draft':
+        _fill_level = 0.5
+    elif phase == 'generation':
+        _fill_level = 0.5 + 0.5 * progress
+    elif phase == 'buffer_trainer_spec':
+        if progress <= 0.5:
+            _fill_level = 1.0 - 1.5 * progress
+        else:
+            _fill_level = 0.25 + 0.5 * (progress - 0.5)
+    else:
+        _fill_level = 0.5
+    data_buffer_fill.set_height(_data_buffer_inner_h_max * _fill_level)
+
     if phase == 'input_typing':
         # User input 逐字出现; 用户图像从左到右切入 (entrance_progress 0→1)
         n_in = max(1, int(progress * len(inp)))
@@ -724,12 +747,18 @@ def animate(frame):
         # 小球从 input 右边框的垂直中点出发，到 Draft 中心
         input_right_center_y = INPUT_BOX_Y + INPUT_BOX_H / 2
         draw_dots_batch_along_path(ax, INPUT_BOX_LEFT + INPUT_BOX_W, input_right_center_y, DRAFT_X, DRAFT_CENTER_Y, progress, n_dots=3, color=COLOR_AURORA)
-        status_text.set_text('Status2: Input → Draft')
+        status_text.set_text('Status2: Assistant get the input...')
 
     elif phase == 'generation':
         # Draft、target、data buffer 高亮; output 逐字; 全部用线性 progress，cycle2 靠更多帧数均匀更慢
         input_content.set_text('\n'.join(textwrap.wrap(inp, width=INPUT_WRAP_WIDTH)))
-        progress_out = progress   # 线性，均匀; cycle2 已用更多 generation 帧，体感均匀慢
+        if cycle == 2:
+            content_frame = phase_frame - C2_P2 - PHASE_ENTRANCE_FRAMES
+            total_out_frames = FRAMES_GENERATION_C2 + C2_BUFFER
+        else:
+            content_frame = phase_frame - C1_P2 - PHASE_ENTRANCE_FRAMES
+            total_out_frames = C1_GENERATION + C1_BUFFER
+        progress_out = min(1.0, max(0.0, content_frame / total_out_frames))
         n_out = max(0, int(progress_out * len(out)))
         output_content.set_text('\n'.join(textwrap.wrap(out[:n_out], width=WRAP_WIDTH)) if n_out else '')
         state.user_elements = draw_user(ax, user_x, user_y, user_type, is_happy, 1.0, cycle=cycle, entrance_progress=1.0)
@@ -752,12 +781,20 @@ def animate(frame):
         output_center_x = OUTPUT_BOX_LEFT + OUTPUT_BOX_W / 2
         output_center_y = OUTPUT_BOX_Y + OUTPUT_BOX_H / 2
         draw_dots_batch_along_path(ax, INFERENCE_CENTER_X, TARGET_CENTER_Y, output_center_x, output_center_y, t3, n_dots=3, color=COLOR_TARGET)
-        status_text.set_text('Status3: Generation: Draft → Target → Buffer & Output')
+        status_text.set_text('Status3: Assistant generate the output and transfer data to the buffer...')
 
     elif phase == 'buffer_trainer_spec':
-        # Output 已结束; data buffer → trainer, trainer → new spec (小球)
+        # output 继续逐字（与 stage3 连续，在整个 stage3+stage4 内 0→1）
         input_content.set_text('\n'.join(textwrap.wrap(inp, width=INPUT_WRAP_WIDTH)))
-        output_content.set_text('\n'.join(textwrap.wrap(out, width=WRAP_WIDTH)))
+        if cycle == 2:
+            content_frame = FRAMES_GENERATION_C2 + (phase_frame - C2_P3 - PHASE_ENTRANCE_FRAMES)
+            total_out_frames = FRAMES_GENERATION_C2 + C2_BUFFER
+        else:
+            content_frame = C1_GENERATION + (phase_frame - C1_P3 - PHASE_ENTRANCE_FRAMES)
+            total_out_frames = C1_GENERATION + C1_BUFFER
+        progress_out = min(1.0, max(0.0, content_frame / total_out_frames))
+        n_out = max(0, int(progress_out * len(out)))
+        output_content.set_text('\n'.join(textwrap.wrap(out[:n_out], width=WRAP_WIDTH)) if n_out else '')
         state.user_elements = draw_user(ax, user_x, user_y, user_type, is_happy, 1.0, cycle=cycle, entrance_progress=1.0)
         data_buffer.set_alpha(0.9)
         trainer_box.set_alpha(0.6 + 0.3 * np.sin(progress * 8 * np.pi))
@@ -768,7 +805,17 @@ def animate(frame):
         batch_p = (progress * 2) % 1.0
         draw_dots_batch_along_path(ax, DATA_BUFFER_CX, DATA_BUFFER_CY, TRAIN_CENTER_X, TRAINER_CENTER_Y, batch_p, n_dots=3, color=COLOR_DATA)
         draw_dots_batch_along_path(ax, TRAIN_CENTER_X, TRAINER_Y + MODEL_BOX_H, TRAIN_CENTER_X, SPEC_Y, batch_p, n_dots=3, color=COLOR_AURORA)
-        status_text.set_text('Status4: Data Buffer → Trainer → New Spec')
+        # Status3 的 draft→target→buffer & output 小球在 Status4 用浅色重放（与 Status3 相同路径与节奏）
+        light_alpha = 0.5
+        t_loop = (progress * 1.5) % 1.0
+        draw_dots_batch_along_path(ax, INFERENCE_CENTER_X, DRAFT_Y, INFERENCE_CENTER_X, TARGET_Y + MODEL_BOX_H, t_loop, n_dots=3, color=COLOR_DRAFT_LIGHT, alpha=light_alpha)
+        t2 = (progress * 1.5 + 0.33) % 1.0
+        draw_dots_batch_along_path(ax, INFERENCE_CENTER_X, TARGET_Y, DATA_BUFFER_LEFT + 0.4, DATA_BUFFER_CY, t2, n_dots=3, color=COLOR_TARGET_LIGHT, alpha=light_alpha)
+        t3 = (progress * 1.5 + 0.66) % 1.0
+        output_center_x = OUTPUT_BOX_LEFT + OUTPUT_BOX_W / 2
+        output_center_y = OUTPUT_BOX_Y + OUTPUT_BOX_H / 2
+        draw_dots_batch_along_path(ax, INFERENCE_CENTER_X, TARGET_CENTER_Y, output_center_x, output_center_y, t3, n_dots=3, color=COLOR_TARGET_LIGHT, alpha=light_alpha)
+        status_text.set_text('Status4: Data Buffer is full! Start asynchronous training...')
 
     elif phase == 'spec_fly':
         # New Spec flies from Training Server to cover Draft1 in Inference Server
@@ -800,7 +847,7 @@ def animate(frame):
         user_alpha = 0.4
         state.user_elements = draw_user(ax, user_x, user_y, user_type, is_happy, user_alpha, cycle=cycle, entrance_progress=1.0)
 
-        status_text.set_text('Status5: New Spec deploying to Inference Server (Draft)...')
+        status_text.set_text('Status5: Training complete! New drafter deploying to Inference Server...')
 
     elif phase == 'cycle_pause':
         # 每个 cycle 结束暂停约 1s：保持 spec_fly 结束画面（New Spec 已覆盖 Draft）
